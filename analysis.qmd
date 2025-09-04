@@ -1,0 +1,931 @@
+---
+title: "Safety Data Analysis"
+format: 
+  html:
+    self-contained: true
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+---
+
+```{r setup}
+#| label: load-packages
+#| include: false
+
+library(tidyverse)
+library(readxl)
+library(here)
+```
+
+## Data Import
+
+```{r}
+#| label: load-data
+
+# Load the Excel data
+safety_data <- read_excel("data/Data Safety II Unique Codes for Erik.xlsx")
+
+# Display basic information about the data
+glimpse(safety_data)
+```
+
+## Data Overview
+
+```{r}
+#| label: data-summary
+
+# Display first few rows
+head(safety_data)
+
+# Basic summary statistics
+summary(safety_data)
+
+# Dataset dimensions
+data_dims <- tibble(
+  Metric = c("Number of observations", "Number of variables"),
+  Value = c(nrow(safety_data), ncol(safety_data))
+)
+
+knitr::kable(data_dims)
+```
+
+## Section 1: Basic Descriptive Statistics
+
+### Overall Study Statistics
+
+```{r}
+#| label: overall-stats
+
+# Total number of patients
+total_patients <- safety_data %>%
+  distinct(patient_id) %>%
+  nrow()
+
+# Total number of unique resilient behaviors (events)
+total_events <- safety_data %>%
+  distinct(event_id) %>%
+  nrow()
+
+# Create summary table
+overall_summary <- tibble(
+  Metric = c("Total patients included", "Total unique resilient behaviors"),
+  Count = c(total_patients, total_events)
+)
+
+knitr::kable(overall_summary,
+             caption = "Overall Study Statistics")
+```
+
+### Statistics by Site
+
+```{r}
+#| label: site-stats
+
+site_summary <- safety_data %>%
+  group_by(site_id) %>%
+  summarise(
+    n_patients = n_distinct(patient_id),
+    n_events = n_distinct(event_id)
+  ) %>%
+  arrange(site_id)
+
+# Display as table
+knitr::kable(site_summary, 
+             col.names = c("Site ID", "Number of Patients", "Number of Resilient Behaviors"),
+             caption = "Summary Statistics by Site")
+```
+
+### Statistics by Type of Resilient Behavior (Safety II Code)
+
+```{r}
+#| label: safety-code-stats
+
+safety_code_summary <- safety_data %>%
+  group_by(safety2_code) %>%
+  summarise(
+    n_events = n_distinct(event_id)
+  ) %>%
+  arrange(desc(n_events))
+
+# Display as table
+knitr::kable(safety_code_summary,
+             col.names = c("Safety II Code", "Number of Resilient Behaviors"),
+             caption = "Summary Statistics by Safety II Code")
+```
+
+### Statistics by Event Type
+
+```{r}
+#| label: event-type-stats
+
+event_type_summary <- safety_data %>%
+  group_by(event_type) %>%
+  summarise(
+    n_events = n_distinct(event_id)
+  ) %>%
+  arrange(desc(n_events))
+
+# Display as table
+knitr::kable(event_type_summary,
+             col.names = c("Event Type", "Number of Resilient Behaviors"),
+             caption = "Summary Statistics by Event Type")
+```
+
+### Summary Visualizations
+
+```{r}
+#| label: summary-plots
+#| fig-width: 10
+#| fig-height: 8
+
+# Plot 1: Distribution by Site
+p1 <- ggplot(site_summary, aes(x = factor(site_id), y = n_events)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Resilient Behaviors by Site",
+       x = "Site ID",
+       y = "Number of Unique Resilient Behaviors") +
+  theme_minimal()
+
+# Plot 2: Top 10 Safety II Codes
+top_safety_codes <- safety_code_summary %>%
+  slice_head(n = 10)
+
+p2 <- ggplot(top_safety_codes, aes(x = reorder(safety2_code, n_events), y = n_events)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Top 10 Safety II Codes by Frequency",
+       x = "Safety II Code",
+       y = "Number of Unique Resilient Behaviors") +
+  theme_minimal()
+
+# Plot 3: Distribution by Event Type
+p3 <- ggplot(event_type_summary, aes(x = reorder(event_type, n_events), y = n_events)) +
+  geom_bar(stat = "identity", fill = "coral") +
+  coord_flip() +
+  labs(title = "Resilient Behaviors by Event Type",
+       x = "Event Type",
+       y = "Number of Unique Resilient Behaviors") +
+  theme_minimal()
+
+# Display plots
+library(patchwork)
+p1 / (p2 | p3)
+```
+
+## Section 2: Mean Unique Resilient Behaviors by Type and Event Source
+
+### Data Preparation and Analysis
+
+```{r}
+#| label: prepare-mean-data
+
+# Create mappings for labels
+resilient_type_labels <- c(
+  "ant" = "Anticipation",
+  "mon" = "Monitoring", 
+  "resp" = "Response",
+  "learn" = "Learning"
+)
+
+event_type_labels <- c(
+  "obs" = "Visit Observation",
+  "par" = "Caregiver Interview",
+  "prov" = "Provider Interview"
+)
+
+# Extract resilient behavior type from safety2_code (first part before underscore)
+safety_data_processed <- safety_data %>%
+  mutate(
+    resilient_type = str_extract(safety2_code, "^[^_]+"),
+    resilient_type_label = resilient_type_labels[resilient_type],
+    event_type_label = event_type_labels[event_type]
+  ) %>%
+  filter(resilient_type %in% names(resilient_type_labels),
+         event_type %in% names(event_type_labels))
+
+# First, get all unique patients
+all_patients <- unique(safety_data_processed$patient_id)
+
+# Create all possible combinations
+all_combinations <- expand.grid(
+  patient_id = all_patients,
+  resilient_type = names(resilient_type_labels),
+  event_type = names(event_type_labels),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    resilient_type_label = resilient_type_labels[resilient_type],
+    event_type_label = event_type_labels[event_type]
+  )
+
+# Calculate behaviors per patient-combination
+behaviors_per_patient <- safety_data_processed %>%
+  group_by(patient_id, resilient_type, event_type) %>%
+  summarise(
+    n_unique_behaviors = n_distinct(event_id),
+    .groups = "drop"
+  )
+
+# Join with all combinations to ensure zeros for missing combinations
+patient_behaviors_complete <- all_combinations %>%
+  left_join(behaviors_per_patient, 
+            by = c("patient_id", "resilient_type", "event_type")) %>%
+  replace_na(list(n_unique_behaviors = 0))
+
+# Calculate mean unique behaviors per patient for each combination
+mean_behaviors <- patient_behaviors_complete %>%
+  group_by(resilient_type, resilient_type_label, event_type, event_type_label) %>%
+  summarise(
+    mean_behaviors = mean(n_unique_behaviors),
+    sd_behaviors = sd(n_unique_behaviors),
+    n = n(),
+    se = sd_behaviors / sqrt(n),
+    ci_lower = mean_behaviors - 1.96 * se,
+    ci_upper = mean_behaviors + 1.96 * se,
+    .groups = "drop"
+  )
+
+# Display summary table
+knitr::kable(
+  mean_behaviors %>%
+    select(resilient_type_label, event_type_label, mean_behaviors, ci_lower, ci_upper, n) %>%
+    rename(
+      "Resilient Behavior Type" = resilient_type_label,
+      "Event Type" = event_type_label,
+      "Mean Behaviors per Patient" = mean_behaviors,
+      "95% CI Lower" = ci_lower,
+      "95% CI Upper" = ci_upper,
+      "N" = n
+    ),
+  digits = 3,
+  caption = "Mean Unique Resilient Behaviors per Patient by Type and Event Source"
+)
+```
+
+### Grouped Bar Charts
+
+#### Version 1: Without Error Bars
+
+```{r}
+#| label: mean-behaviors-plot-no-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Set factor levels for proper ordering
+mean_behaviors$resilient_type_label <- factor(
+  mean_behaviors$resilient_type_label,
+  levels = c("Anticipation", "Monitoring", "Response", "Learning")
+)
+
+mean_behaviors$event_type_label <- factor(
+  mean_behaviors$event_type_label,
+  levels = c("Visit Observation", "Caregiver Interview", "Provider Interview")
+)
+
+# Create the grouped bar plot WITHOUT error bars
+p_grouped_no_error <- ggplot(mean_behaviors, 
+                             aes(x = resilient_type_label, 
+                                 y = mean_behaviors, 
+                                 fill = event_type_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = c("Visit Observation" = "#5B9BD5",
+                               "Caregiver Interview" = "#ED7D31", 
+                               "Provider Interview" = "#A5A5A5")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilient Behaviors by Type and Event Source"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 2.0), breaks = seq(0, 2.0, 0.2))
+
+print(p_grouped_no_error)
+```
+
+#### Version 2: With 95% Confidence Intervals
+
+**Note:** Error bars are only shown where there is variance in the data. Some combinations have no error bars because all patients had identical numbers of behaviors (zero variance):
+- Learning + Visit Observation (all patients had exactly 1 behavior)
+- Learning + Caregiver Interview (all patients had exactly 1 behavior)
+- Monitoring + Visit Observation (all patients had exactly 1 behavior)
+
+```{r}
+#| label: mean-behaviors-plot-with-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Fix negative CI bounds by setting them to 0
+mean_behaviors_adjusted <- mean_behaviors %>%
+  mutate(
+    ci_lower_adj = pmax(ci_lower, 0)  # Set negative values to 0
+  )
+
+# Separate data for error bars (only where SD > 0 AND CI range exists)
+mean_behaviors_with_error <- mean_behaviors_adjusted %>%
+  filter(sd_behaviors > 0 & (ci_upper - ci_lower_adj) > 0.001)  # Only show if there's a meaningful CI range
+
+# Create the grouped bar plot WITH error bars
+p_grouped_with_error <- ggplot(mean_behaviors_adjusted, 
+                               aes(x = resilient_type_label, 
+                                   y = mean_behaviors, 
+                                   fill = event_type_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(data = mean_behaviors_with_error,
+                aes(ymin = ci_lower_adj, ymax = ci_upper),
+                position = position_dodge(width = 0.8),
+                width = 0.2,
+                color = "black",
+                linewidth = 0.5) +
+  scale_fill_manual(values = c("Visit Observation" = "#5B9BD5",
+                               "Caregiver Interview" = "#ED7D31", 
+                               "Provider Interview" = "#A5A5A5")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilient Behaviors with 95% CI"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 2.0), breaks = seq(0, 2.0, 0.2))
+
+print(p_grouped_with_error)
+```
+
+*Note: Confidence interval lower bounds that would be negative have been recoded to 0, as negative values are not meaningful for count data.*
+
+## Section 3: Mean Unique Resilient Behaviors by Resilience Characteristics
+
+### Figure 2: Resilience Characteristics Analysis
+
+```{r}
+#| label: prepare-resilience-data
+
+# Create mappings for resilience characteristics
+resilience_labels <- c(
+  "rebound" = "Rebound",
+  "robust" = "Robustness",
+  "grace" = "Graceful extensibility",
+  "new" = "New normal"
+)
+
+# The resilience characteristics ARE the safety2_code values themselves
+safety_data_resilience <- safety_data %>%
+  mutate(
+    resilience_type = safety2_code,
+    resilience_label = resilience_labels[resilience_type],
+    event_type_label = event_type_labels[event_type]
+  ) %>%
+  filter(resilience_type %in% names(resilience_labels),
+         event_type %in% names(event_type_labels))
+
+# Get all unique patients for this analysis
+all_patients_res <- unique(safety_data_resilience$patient_id)
+
+# Create all possible combinations
+all_combinations_res <- expand.grid(
+  patient_id = all_patients_res,
+  resilience_type = names(resilience_labels),
+  event_type = names(event_type_labels),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    resilience_label = resilience_labels[resilience_type],
+    event_type_label = event_type_labels[event_type]
+  )
+
+# Calculate behaviors per patient-combination
+behaviors_per_patient_res <- safety_data_resilience %>%
+  group_by(patient_id, resilience_type, event_type) %>%
+  summarise(
+    n_unique_behaviors = n_distinct(event_id),
+    .groups = "drop"
+  )
+
+# Join with all combinations to ensure zeros for missing combinations
+patient_behaviors_complete_res <- all_combinations_res %>%
+  left_join(behaviors_per_patient_res, 
+            by = c("patient_id", "resilience_type", "event_type")) %>%
+  replace_na(list(n_unique_behaviors = 0))
+
+# Calculate mean unique behaviors per patient for each combination
+mean_behaviors_res <- patient_behaviors_complete_res %>%
+  group_by(resilience_type, resilience_label, event_type, event_type_label) %>%
+  summarise(
+    mean_behaviors = mean(n_unique_behaviors),
+    sd_behaviors = sd(n_unique_behaviors),
+    n = n(),
+    se = sd_behaviors / sqrt(n),
+    ci_lower = mean_behaviors - 1.96 * se,
+    ci_upper = mean_behaviors + 1.96 * se,
+    .groups = "drop"
+  )
+
+# Display summary table
+knitr::kable(
+  mean_behaviors_res %>%
+    select(resilience_label, event_type_label, mean_behaviors, ci_lower, ci_upper, n) %>%
+    rename(
+      "Resilience Characteristic" = resilience_label,
+      "Event Type" = event_type_label,
+      "Mean Behaviors per Patient" = mean_behaviors,
+      "95% CI Lower" = ci_lower,
+      "95% CI Upper" = ci_upper,
+      "N" = n
+    ),
+  digits = 3,
+  caption = "Mean Unique Resilient Behaviors per Patient by Resilience Characteristic and Event Source"
+)
+```
+
+### Grouped Bar Charts
+
+#### Version 1: Without Error Bars
+
+```{r}
+#| label: resilience-behaviors-plot-no-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Set factor levels for proper ordering
+mean_behaviors_res$resilience_label <- factor(
+  mean_behaviors_res$resilience_label,
+  levels = c("Rebound", "Robustness", "Graceful extensibility", "New normal")
+)
+
+mean_behaviors_res$event_type_label <- factor(
+  mean_behaviors_res$event_type_label,
+  levels = c("Visit Observation", "Caregiver Interview", "Provider Interview")
+)
+
+# Create the grouped bar plot WITHOUT error bars
+p_resilience_no_error <- ggplot(mean_behaviors_res, 
+                                aes(x = resilience_label, 
+                                    y = mean_behaviors, 
+                                    fill = event_type_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = c("Visit Observation" = "#5B9BD5",
+                               "Caregiver Interview" = "#ED7D31", 
+                               "Provider Interview" = "#A5A5A5")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilient Behaviors by Resilience Characteristics"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 1.4), breaks = seq(0, 1.4, 0.2))
+
+print(p_resilience_no_error)
+```
+
+#### Version 2: With 95% Confidence Intervals
+
+```{r}
+#| label: resilience-behaviors-plot-with-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Fix negative CI bounds
+mean_behaviors_res_adj <- mean_behaviors_res %>%
+  mutate(
+    ci_lower_adj = pmax(ci_lower, 0)
+  )
+
+# Filter for error bars (only where meaningful)
+mean_behaviors_res_error <- mean_behaviors_res_adj %>%
+  filter(sd_behaviors > 0 & (ci_upper - ci_lower_adj) > 0.001)
+
+# Create the grouped bar plot WITH error bars
+p_resilience_with_error <- ggplot(mean_behaviors_res_adj, 
+                                  aes(x = resilience_label, 
+                                      y = mean_behaviors, 
+                                      fill = event_type_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(data = mean_behaviors_res_error,
+                aes(ymin = ci_lower_adj, ymax = ci_upper),
+                position = position_dodge(width = 0.8),
+                width = 0.2,
+                color = "black",
+                linewidth = 0.5) +
+  scale_fill_manual(values = c("Visit Observation" = "#5B9BD5",
+                               "Caregiver Interview" = "#ED7D31", 
+                               "Provider Interview" = "#A5A5A5")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilient Behaviors by Resilience Characteristics with 95% CI"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 1.4), breaks = seq(0, 1.4, 0.2))
+
+print(p_resilience_with_error)
+```
+
+*Note: Confidence interval lower bounds that would be negative have been recoded to 0. Error bars are not shown for combinations where all patients had identical values (zero variance).*
+
+## Section 4: Mean Unique Resilient Behaviors by Site
+
+### Figure 3: Site Comparison Analysis
+
+```{r}
+#| label: prepare-site-data
+
+# Create site labels mapping
+site_labels <- c(
+  "bch" = "Site 1",
+  "cc" = "Site 2",
+  "chop" = "Site 3"
+)
+
+# Filter for relevant resilient behavior types (ant, mon, resp, learn)
+safety_data_sites <- safety_data %>%
+  mutate(
+    resilient_type = str_extract(safety2_code, "^[^_]+"),
+    resilient_type_label = resilient_type_labels[resilient_type],
+    site_label = site_labels[site_id]
+  ) %>%
+  filter(resilient_type %in% c("ant", "mon", "resp", "learn"),
+         site_id %in% names(site_labels))
+
+# Get all unique patients for this analysis
+all_patients_sites <- unique(safety_data_sites$patient_id)
+
+# Create all possible combinations
+all_combinations_sites <- expand.grid(
+  patient_id = all_patients_sites,
+  resilient_type = c("ant", "mon", "resp", "learn"),
+  site_id = names(site_labels),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    resilient_type_label = resilient_type_labels[resilient_type],
+    site_label = site_labels[site_id]
+  )
+
+# Calculate behaviors per patient-combination
+behaviors_per_patient_sites <- safety_data_sites %>%
+  group_by(patient_id, resilient_type, site_id) %>%
+  summarise(
+    n_unique_behaviors = n_distinct(event_id),
+    .groups = "drop"
+  )
+
+# Join with all combinations to ensure zeros for missing combinations
+patient_behaviors_complete_sites <- all_combinations_sites %>%
+  left_join(behaviors_per_patient_sites, 
+            by = c("patient_id", "resilient_type", "site_id")) %>%
+  replace_na(list(n_unique_behaviors = 0))
+
+# Calculate mean unique behaviors per patient for each combination
+mean_behaviors_sites <- patient_behaviors_complete_sites %>%
+  group_by(resilient_type, resilient_type_label, site_id, site_label) %>%
+  summarise(
+    mean_behaviors = mean(n_unique_behaviors),
+    sd_behaviors = sd(n_unique_behaviors),
+    n = n(),
+    se = sd_behaviors / sqrt(n),
+    ci_lower = mean_behaviors - 1.96 * se,
+    ci_upper = mean_behaviors + 1.96 * se,
+    .groups = "drop"
+  )
+
+# Display summary table
+knitr::kable(
+  mean_behaviors_sites %>%
+    select(resilient_type_label, site_label, mean_behaviors, ci_lower, ci_upper, n) %>%
+    rename(
+      "Resilient Behavior Type" = resilient_type_label,
+      "Site" = site_label,
+      "Mean Behaviors per Patient" = mean_behaviors,
+      "95% CI Lower" = ci_lower,
+      "95% CI Upper" = ci_upper,
+      "N" = n
+    ),
+  digits = 3,
+  caption = "Mean Unique Resilient Behaviors per Patient by Type and Site"
+)
+```
+
+### Grouped Bar Charts by Site
+
+#### Version 1: Without Error Bars
+
+```{r}
+#| label: site-behaviors-plot-no-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Set factor levels for proper ordering
+mean_behaviors_sites$resilient_type_label <- factor(
+  mean_behaviors_sites$resilient_type_label,
+  levels = c("Anticipation", "Monitoring", "Response", "Learning")
+)
+
+mean_behaviors_sites$site_label <- factor(
+  mean_behaviors_sites$site_label,
+  levels = c("Site 1", "Site 2", "Site 3")
+)
+
+# Create the grouped bar plot WITHOUT error bars
+p_sites_no_error <- ggplot(mean_behaviors_sites, 
+                           aes(x = resilient_type_label, 
+                               y = mean_behaviors, 
+                               fill = site_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = c("Site 1" = "#1f77b4",
+                               "Site 2" = "#ff7f0e",
+                               "Site 3" = "#8c8c8c")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilient Behaviors by Type and Site"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 4.5), breaks = seq(0, 4.5, 0.5))
+
+print(p_sites_no_error)
+```
+
+#### Version 2: With 95% Confidence Intervals
+
+```{r}
+#| label: site-behaviors-plot-with-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Fix negative CI bounds
+mean_behaviors_sites_adj <- mean_behaviors_sites %>%
+  mutate(
+    ci_lower_adj = pmax(ci_lower, 0)
+  )
+
+# Filter for error bars (only where meaningful)
+mean_behaviors_sites_error <- mean_behaviors_sites_adj %>%
+  filter(sd_behaviors > 0 & (ci_upper - ci_lower_adj) > 0.001)
+
+# Create the grouped bar plot WITH error bars
+p_sites_with_error <- ggplot(mean_behaviors_sites_adj, 
+                             aes(x = resilient_type_label, 
+                                 y = mean_behaviors, 
+                                 fill = site_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(data = mean_behaviors_sites_error,
+                aes(ymin = ci_lower_adj, ymax = ci_upper),
+                position = position_dodge(width = 0.8),
+                width = 0.2,
+                color = "black",
+                linewidth = 0.5) +
+  scale_fill_manual(values = c("Site 1" = "#1f77b4",
+                               "Site 2" = "#ff7f0e",
+                               "Site 3" = "#8c8c8c")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilient Behaviors by Type and Site with 95% CI"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 4.5), breaks = seq(0, 4.5, 0.5))
+
+print(p_sites_with_error)
+```
+
+*Note: Confidence interval lower bounds that would be negative have been recoded to 0. Error bars are not shown for combinations where all patients had identical values (zero variance).*
+
+## Section 5: Mean Unique Resilience Characteristics by Site
+
+### Figure 4: Resilience Characteristics by Site Analysis
+
+```{r}
+#| label: prepare-resilience-site-data
+
+# Filter for resilience characteristics (rebound, robust, grace, new)
+safety_data_res_sites <- safety_data %>%
+  mutate(
+    resilience_type = safety2_code,
+    resilience_label = resilience_labels[resilience_type],
+    site_label = site_labels[site_id]
+  ) %>%
+  filter(resilience_type %in% c("rebound", "robust", "grace", "new"),
+         site_id %in% names(site_labels))
+
+# Get all unique patients for this analysis
+all_patients_res_sites <- unique(safety_data_res_sites$patient_id)
+
+# Create all possible combinations
+all_combinations_res_sites <- expand.grid(
+  patient_id = all_patients_res_sites,
+  resilience_type = c("rebound", "robust", "grace", "new"),
+  site_id = names(site_labels),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    resilience_label = resilience_labels[resilience_type],
+    site_label = site_labels[site_id]
+  )
+
+# Calculate behaviors per patient-combination
+behaviors_per_patient_res_sites <- safety_data_res_sites %>%
+  group_by(patient_id, resilience_type, site_id) %>%
+  summarise(
+    n_unique_behaviors = n_distinct(event_id),
+    .groups = "drop"
+  )
+
+# Join with all combinations to ensure zeros for missing combinations
+patient_behaviors_complete_res_sites <- all_combinations_res_sites %>%
+  left_join(behaviors_per_patient_res_sites, 
+            by = c("patient_id", "resilience_type", "site_id")) %>%
+  replace_na(list(n_unique_behaviors = 0))
+
+# Calculate mean unique behaviors per patient for each combination
+mean_behaviors_res_sites <- patient_behaviors_complete_res_sites %>%
+  group_by(resilience_type, resilience_label, site_id, site_label) %>%
+  summarise(
+    mean_behaviors = mean(n_unique_behaviors),
+    sd_behaviors = sd(n_unique_behaviors),
+    n = n(),
+    se = sd_behaviors / sqrt(n),
+    ci_lower = mean_behaviors - 1.96 * se,
+    ci_upper = mean_behaviors + 1.96 * se,
+    .groups = "drop"
+  )
+
+# Display summary table
+knitr::kable(
+  mean_behaviors_res_sites %>%
+    select(resilience_label, site_label, mean_behaviors, ci_lower, ci_upper, n) %>%
+    rename(
+      "Resilience Characteristic" = resilience_label,
+      "Site" = site_label,
+      "Mean Behaviors per Patient" = mean_behaviors,
+      "95% CI Lower" = ci_lower,
+      "95% CI Upper" = ci_upper,
+      "N" = n
+    ),
+  digits = 3,
+  caption = "Mean Unique Resilience Characteristics per Patient by Site"
+)
+```
+
+### Grouped Bar Charts by Site
+
+#### Version 1: Without Error Bars
+
+```{r}
+#| label: resilience-site-behaviors-plot-no-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Set factor levels for proper ordering
+mean_behaviors_res_sites$resilience_label <- factor(
+  mean_behaviors_res_sites$resilience_label,
+  levels = c("Rebound", "Robustness", "Graceful extensibility", "New normal")
+)
+
+mean_behaviors_res_sites$site_label <- factor(
+  mean_behaviors_res_sites$site_label,
+  levels = c("Site 1", "Site 2", "Site 3")
+)
+
+# Create the grouped bar plot WITHOUT error bars
+p_res_sites_no_error <- ggplot(mean_behaviors_res_sites, 
+                               aes(x = resilience_label, 
+                                   y = mean_behaviors, 
+                                   fill = site_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = c("Site 1" = "#1f77b4",
+                               "Site 2" = "#ff7f0e",
+                               "Site 3" = "#8c8c8c")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilience Characteristics by Site"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 3.5), breaks = seq(0, 3.5, 0.5))
+
+print(p_res_sites_no_error)
+```
+
+#### Version 2: With 95% Confidence Intervals
+
+```{r}
+#| label: resilience-site-behaviors-plot-with-error
+#| fig-width: 10
+#| fig-height: 6
+
+# Fix negative CI bounds
+mean_behaviors_res_sites_adj <- mean_behaviors_res_sites %>%
+  mutate(
+    ci_lower_adj = pmax(ci_lower, 0)
+  )
+
+# Filter for error bars (only where meaningful)
+mean_behaviors_res_sites_error <- mean_behaviors_res_sites_adj %>%
+  filter(sd_behaviors > 0 & (ci_upper - ci_lower_adj) > 0.001)
+
+# Create the grouped bar plot WITH error bars
+p_res_sites_with_error <- ggplot(mean_behaviors_res_sites_adj, 
+                                 aes(x = resilience_label, 
+                                     y = mean_behaviors, 
+                                     fill = site_label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(data = mean_behaviors_res_sites_error,
+                aes(ymin = ci_lower_adj, ymax = ci_upper),
+                position = position_dodge(width = 0.8),
+                width = 0.2,
+                color = "black",
+                linewidth = 0.5) +
+  scale_fill_manual(values = c("Site 1" = "#1f77b4",
+                               "Site 2" = "#ff7f0e",
+                               "Site 3" = "#8c8c8c")) +
+  labs(
+    x = NULL,
+    y = "Mean Unique Resilient Behaviors per Patient",
+    fill = NULL,
+    title = "Mean Unique Resilience Characteristics by Site with 95% CI"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, 3.5), breaks = seq(0, 3.5, 0.5))
+
+print(p_res_sites_with_error)
+```
+
+*Note: Confidence interval lower bounds that would be negative have been recoded to 0. Error bars are not shown for combinations where all patients had identical values (zero variance).*
