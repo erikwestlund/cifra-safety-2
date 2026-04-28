@@ -61,6 +61,7 @@ rsconnect/
 
 # Quarto output files
 analysis_files/
+figures/
 *.html
 
 .claude
